@@ -1,0 +1,10 @@
+{
+  "best_model": "Gradient Boosting",
+  "r2": 0.7169228315670326,
+  "rmse": 12237.748915059397,
+  "mae": 8880.082834963012,
+  "average_daily_demand": 22168.634328877004,
+  "yoy_growth": 58.80029253371749,
+  "weekend_uplift": -73.58012484250699,
+  "holiday_lift": 134.47723571118513
+}
