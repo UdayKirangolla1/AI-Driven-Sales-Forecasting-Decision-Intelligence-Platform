@@ -277,6 +277,12 @@ def load_model_artifacts():
     try:
         with open(model_path, "rb") as f:
             model_obj = pickle.load(f)
+    except Exception as e:
+        st.error("Model loading failed. Please retrain model with the same scikit-learn version.")
+        st.exception(e)
+        model_obj = None
+        return None, None, False
+    try:
         with open(features_path, "rb") as f:
             feature_cols = pickle.load(f)
         target_is_log = False
@@ -407,7 +413,7 @@ def generate_recent_predictions(model_obj, base_daily_sales, feature_cols, windo
 
 model_obj, feature_columns, target_is_log = load_model_artifacts()
 if model_obj is None or not feature_columns:
-    st.warning("Run python run_model.py first to generate the trained model.")
+    st.warning("Run run_model.py locally and push updated best_model.pkl.")
     predictions = sample_predictions()
     next_7_dynamic = read_csv_or_none(OUTPUT_DIR / "next_7_days_forecast.csv")
     next_30_dynamic = read_csv_or_none(OUTPUT_DIR / "next_30_days_forecast.csv")
@@ -732,7 +738,7 @@ st.markdown("<div style='height:14px'></div>", unsafe_allow_html=True)
 # Real-time custom prediction from pickle model
 st.markdown('<div class="panel"><div class="section-title">Predict Sales for a Custom Date</div>', unsafe_allow_html=True)
 if model_obj is None or not feature_columns:
-    st.warning("Run python run_model.py first to generate the trained model.")
+    st.warning("Run run_model.py locally and push updated best_model.pkl.")
 else:
     last_date = daily_sales["Date"].max()
     st.write("Last Date in Dataset:", last_date)
