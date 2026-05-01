@@ -1,4 +1,5 @@
 import json
+import os
 import pickle
 from pathlib import Path
 
@@ -170,9 +171,9 @@ st.markdown(
     unsafe_allow_html=True,
 )
 
-BASE_DIR = Path(__file__).resolve().parent.parent
-OUTPUT_DIR = BASE_DIR / "outputs"
-MODELS_DIR = BASE_DIR / "models"
+BASE_DIR = os.path.dirname(os.path.dirname(__file__))
+OUTPUT_DIR = Path(BASE_DIR) / "outputs"
+MODELS_DIR = Path(BASE_DIR) / "models"
 
 
 def read_csv_or_none(path: Path):
