@@ -1,4 +1,5 @@
 import json
+import os
 import pickle
 from pathlib import Path
 
@@ -11,9 +12,27 @@ from sklearn.metrics import mean_absolute_error, mean_squared_error, r2_score
 from sklearn.pipeline import Pipeline
 from sklearn.impute import SimpleImputer
 
-print("Loading data...")
-data = pd.read_csv(
-    r'C:\Users\udayk\Downloads\regression\Online Retail.csv', encoding="latin")
+BASE_DIR = Path(__file__).resolve().parent
+_csv_candidates = []
+_env = os.environ.get("SALES_DATA_PATH", "").strip()
+if _env:
+    _csv_candidates.append(Path(_env))
+_csv_candidates.extend(
+    [
+        BASE_DIR / "data" / "Online Retail.csv",
+        Path(r"C:\Users\udayk\Downloads\regression\Online Retail.csv"),
+    ]
+)
+DATA_CSV = next((p for p in _csv_candidates if p.exists()), None)
+if DATA_CSV is None:
+    raise FileNotFoundError(
+        "Retail CSV not found. Put 'Online Retail.csv' in ./data/, or set SALES_DATA_PATH "
+        "to the full path.\nChecked:\n  - "
+        + "\n  - ".join(str(p) for p in _csv_candidates)
+    )
+
+print(f"Loading data from {DATA_CSV}...")
+data = pd.read_csv(DATA_CSV, encoding="latin")
 print("Data loaded successfully")
 
 OUTPUT_DIR = Path("outputs")

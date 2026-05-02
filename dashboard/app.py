@@ -176,6 +176,11 @@ OUTPUT_DIR = Path(BASE_DIR) / "outputs"
 MODELS_DIR = Path(BASE_DIR) / "models"
 
 
+def fmt_inr(value: float, decimals: int = 2) -> str:
+    """Display-only rupee formatting (no unit conversion)."""
+    return f"₹{value:,.{decimals}f}"
+
+
 def read_csv_or_none(path: Path):
     if not path.exists():
         return None
@@ -185,83 +190,54 @@ def read_csv_or_none(path: Path):
         return None
 
 
-def sample_predictions():
-    dates = pd.date_range("2026-01-01", periods=42, freq="D")
-    base = 32000 + pd.Series(range(len(dates))) * 90
-    actual = base + 3200 * pd.Series(([0.1, -0.08, 0.12, -0.04, 0.2, -0.1, 0.06] * 6))
-    pred = base + 2100 * pd.Series(([0.07, -0.06, 0.09, -0.03, 0.14, -0.08, 0.03] * 6))
-    return pd.DataFrame({"Date": dates, "Actual_Sales": actual.round(2), "Predicted_Sales": pred.round(2)})
+def read_json_or_none(path: Path):
+    if not path.exists():
+        return None
+    try:
+        with open(path, encoding="utf-8") as f:
+            return json.load(f)
+    except Exception:
+        return None
 
 
-def sample_model_comparison():
-    return pd.DataFrame(
-        {
-            "Model": ["Gradient Boosting", "Ensemble", "Random Forest", "XGBoost", "SARIMA"],
-            "MAE": [1180, 1250, 1360, 1490, 1820],
-            "RMSE": [1680, 1760, 1925, 2105, 2500],
-            "R2 Score": [0.89, 0.86, 0.83, 0.79, 0.68],
-        }
-    )
-
-
-def sample_feature_importance():
-    return pd.DataFrame(
-        {
-            "Feature": [
-                "lag7",
-                "week_of_year",
-                "rolling14_mean",
-                "is_weekend",
-                "promo_index",
-                "month_sin",
-                "lag30",
-                "volatility_7",
-            ],
-            "Importance": [0.21, 0.18, 0.15, 0.12, 0.11, 0.09, 0.08, 0.06],
-        }
-    )
-
-
-def sample_daily():
-    dates = pd.date_range("2026-01-01", periods=180, freq="D")
-    sales = 28000 + (pd.Series(range(len(dates))) * 20) + 3000 * pd.Series(([0.08, -0.05, 0.1, -0.02, 0.16, -0.1, 0.06] * 26))[:len(dates)]
-    return pd.DataFrame({"Date": dates, "Sales": sales.round(2)})
-
-
-model_comp = read_csv_or_none(OUTPUT_DIR / "model_comparison.csv")
-feature_importance = read_csv_or_none(OUTPUT_DIR / "feature_importance.csv")
 daily_sales = read_csv_or_none(OUTPUT_DIR / "daily_sales.csv")
-
-if model_comp is None:
-    model_comp = sample_model_comparison()
-if feature_importance is None:
-    feature_importance = sample_feature_importance()
-if daily_sales is None:
-    daily_sales = sample_daily()
+if daily_sales is None or not {"Date", "Sales"}.issubset(daily_sales.columns):
+    st.error("Missing or invalid `outputs/daily_sales.csv`. Run `run_model.py` to generate outputs from your dataset.")
+    st.stop()
 
 daily_sales["Date"] = pd.to_datetime(daily_sales["Date"])
+daily_sales["Sales"] = pd.to_numeric(daily_sales["Sales"], errors="coerce").fillna(0.0)
 daily_sales = daily_sales.sort_values("Date").reset_index(drop=True)
 
-# Shift historical timeline to a recent date range for modern dashboard context
-latest_real_date = pd.Timestamp.today().normalize()
-date_range = (daily_sales["Date"].max() - daily_sales["Date"].min()).days
-new_start_date = latest_real_date - pd.Timedelta(days=date_range)
-daily_sales["Date"] = pd.date_range(
-    start=new_start_date,
-    periods=len(daily_sales),
-    freq="D",
-)
+model_comp = read_csv_or_none(OUTPUT_DIR / "model_comparison.csv")
+metrics_json = read_json_or_none(OUTPUT_DIR / "metrics.json")
 
-if not {"Model", "MAE", "RMSE", "R2 Score"}.issubset(model_comp.columns):
-    model_comp = sample_model_comparison()
+if model_comp is None or not {"Model", "MAE", "RMSE", "R2 Score"}.issubset(model_comp.columns):
+    if metrics_json and metrics_json.get("best_model") is not None:
+        model_comp = pd.DataFrame(
+            [
+                {
+                    "Model": str(metrics_json.get("best_model", "")),
+                    "MAE": float(metrics_json.get("mae", 0) or 0),
+                    "RMSE": float(metrics_json.get("rmse", 0) or 0),
+                    "R2 Score": float(metrics_json.get("r2", 0) or 0),
+                }
+            ]
+        )
+    else:
+        st.error("Missing `outputs/model_comparison.csv` (or `outputs/metrics.json` with best_model, mae, rmse, r2). Run `run_model.py`.")
+        st.stop()
 
-if not {"Feature", "Importance"}.issubset(feature_importance.columns):
-    feature_importance = sample_feature_importance()
+feature_importance = read_csv_or_none(OUTPUT_DIR / "feature_importance.csv")
+if feature_importance is None or not {"Feature", "Importance"}.issubset(feature_importance.columns):
+    feature_importance = pd.DataFrame(columns=["Feature", "Importance"])
+    st.warning("`outputs/feature_importance.csv` missing or invalid — feature bars will be empty until you run `run_model.py`.")
 
 model_comp = model_comp.copy()
 model_comp["R2 Score"] = pd.to_numeric(model_comp["R2 Score"], errors="coerce").fillna(-1e9)
 model_comp["MAE"] = pd.to_numeric(model_comp["MAE"], errors="coerce").fillna(0)
 model_comp["RMSE"] = pd.to_numeric(model_comp["RMSE"], errors="coerce").fillna(0)
+# loaded from outputs/model_comparison.csv (or fallback row built from metrics.json)
 best_row = model_comp.sort_values("R2 Score", ascending=False).iloc[0]
 best_model_name = str(best_row["Model"])
 best_r2 = float(best_row["R2 Score"])
@@ -370,7 +346,7 @@ def create_future_features(temp_df, future_date, feature_cols):
     return row_df
 
 
-def forecast_next_days(model_obj, base_daily_sales, feature_cols, days):
+def forecast_next_days(model_obj, base_daily_sales, feature_cols, days, target_is_log=False):
     temp_df = base_daily_sales[["Date", "Sales"]].copy()
     temp_df["Date"] = pd.to_datetime(temp_df["Date"])
     temp_df["Sales"] = pd.to_numeric(temp_df["Sales"], errors="coerce").fillna(0)
@@ -380,28 +356,39 @@ def forecast_next_days(model_obj, base_daily_sales, feature_cols, days):
         future_date = last_date + pd.Timedelta(days=i)
         X_future = create_future_features(temp_df, future_date, feature_cols)
         pred = float(model_obj.predict(X_future)[0])
+        if target_is_log:
+            pred = float(np.expm1(pred))
         pred = max(0.0, pred)
         results.append({"Date": future_date, "Predicted_Sales": pred})
         temp_df.loc[len(temp_df)] = [future_date, pred]
     return pd.DataFrame(results)
 
 
-def generate_recent_predictions(model_obj, base_daily_sales, feature_cols, window=30):
+def generate_recent_predictions(model_obj, base_daily_sales, feature_cols, window=30, target_is_log=False):
     ds = base_daily_sales[["Date", "Sales"]].copy()
     ds["Date"] = pd.to_datetime(ds["Date"])
     ds = ds.sort_values("Date").reset_index(drop=True)
-    if len(ds) <= 120:
-        return sample_predictions()
-    window = min(window, len(ds) - 90)
-    start_idx = len(ds) - window
+    if len(ds) < 2:
+        return pd.DataFrame(columns=["Date", "Actual_Sales", "Predicted_Sales"])
+    min_history = 91
+    max_window = len(ds) - min_history
+    if max_window < 1:
+        window = len(ds) - 1
+        start_idx = 1
+    else:
+        window = min(window, max_window)
+        window = max(1, window)
+        start_idx = len(ds) - window
     history_df = ds.iloc[:start_idx].copy()
     eval_df = ds.iloc[start_idx:].copy()
     preds = []
     for _, row in eval_df.iterrows():
         X_eval = create_future_features(history_df, row["Date"], feature_cols)
-        pred = max(0.0, float(model_obj.predict(X_eval)[0]))
+        pred_raw = float(model_obj.predict(X_eval)[0])
+        if target_is_log:
+            pred_raw = float(np.expm1(pred_raw))
+        pred = max(0.0, pred_raw)
         preds.append(pred)
-        # append actual to keep backtest realistic
         history_df.loc[len(history_df)] = [row["Date"], row["Sales"]]
     return pd.DataFrame(
         {
@@ -413,32 +400,65 @@ def generate_recent_predictions(model_obj, base_daily_sales, feature_cols, windo
 
 
 model_obj, feature_columns, target_is_log = load_model_artifacts()
-if model_obj is None or not feature_columns:
-    st.warning("Run run_model.py locally and push updated best_model.pkl.")
-    predictions = sample_predictions()
-    next_7_dynamic = read_csv_or_none(OUTPUT_DIR / "next_7_days_forecast.csv")
-    next_30_dynamic = read_csv_or_none(OUTPUT_DIR / "next_30_days_forecast.csv")
-    if next_7_dynamic is None:
-        next_7_dynamic = pd.DataFrame({"Date": pd.date_range(pd.Timestamp.today().normalize(), periods=7), "Predicted_Sales": np.linspace(30000, 36000, 7)})
-    if next_30_dynamic is None:
-        next_30_dynamic = pd.DataFrame({"Date": pd.date_range(pd.Timestamp.today().normalize(), periods=30), "Predicted_Sales": np.linspace(29000, 38000, 30)})
-else:
-    predictions = generate_recent_predictions(model_obj, daily_sales, feature_columns, window=32)
-    next_7_dynamic = forecast_next_days(model_obj, daily_sales, feature_columns, 7)
-    next_30_dynamic = forecast_next_days(model_obj, daily_sales, feature_columns, 30)
 
-features = feature_columns
+predictions = read_csv_or_none(OUTPUT_DIR / "predictions.csv")
+if predictions is not None and {"Date", "Actual_Sales", "Predicted_Sales"}.issubset(predictions.columns):
+    predictions = predictions.copy()
+else:
+    predictions = None
+
+if predictions is None:
+    if model_obj is None or not feature_columns:
+        st.error(
+            "Missing `outputs/predictions.csv` and trained model (`models/best_model.pkl` + `models/features.pkl`). "
+            "Run `run_model.py` to generate them."
+        )
+        st.stop()
+    predictions = generate_recent_predictions(
+        model_obj, daily_sales, feature_columns, window=32, target_is_log=target_is_log
+    )
+
+if predictions is None or len(predictions) == 0:
+    st.error("Could not load or build predictions. Run `run_model.py`.")
+    st.stop()
+
+next_7_dynamic = read_csv_or_none(OUTPUT_DIR / "next_7_days_forecast.csv")
+next_30_dynamic = read_csv_or_none(OUTPUT_DIR / "next_30_days_forecast.csv")
+
+if next_7_dynamic is None or not {"Date", "Predicted_Sales"}.issubset(next_7_dynamic.columns):
+    if model_obj is None or not feature_columns:
+        st.error("Missing `outputs/next_7_days_forecast.csv`. Run `run_model.py` or ensure the model artifacts exist.")
+        st.stop()
+    next_7_dynamic = forecast_next_days(
+        model_obj, daily_sales, feature_columns, 7, target_is_log=target_is_log
+    )
+
+if next_30_dynamic is None or not {"Date", "Predicted_Sales"}.issubset(next_30_dynamic.columns):
+    if model_obj is None or not feature_columns:
+        st.error("Missing `outputs/next_30_days_forecast.csv`. Run `run_model.py` or ensure the model artifacts exist.")
+        st.stop()
+    next_30_dynamic = forecast_next_days(
+        model_obj, daily_sales, feature_columns, 30, target_is_log=target_is_log
+    )
+
+features = feature_columns if feature_columns else []
 
 predictions["Date"] = pd.to_datetime(predictions["Date"])
-next_7_dynamic["Date"] = pd.to_datetime(next_7_dynamic["Date"])
-next_30_dynamic["Date"] = pd.to_datetime(next_30_dynamic["Date"])
+predictions["Actual_Sales"] = pd.to_numeric(predictions["Actual_Sales"], errors="coerce").fillna(0.0)
+predictions["Predicted_Sales"] = pd.to_numeric(predictions["Predicted_Sales"], errors="coerce").fillna(0.0)
 
-# Align predictions timeline with shifted daily_sales timeline
-predictions["Date"] = pd.date_range(
-    start=daily_sales["Date"].iloc[-len(predictions)],
-    periods=len(predictions),
-    freq="D",
-)
+next_7_dynamic["Date"] = pd.to_datetime(next_7_dynamic["Date"])
+next_7_dynamic["Predicted_Sales"] = pd.to_numeric(next_7_dynamic["Predicted_Sales"], errors="coerce").fillna(0.0)
+next_30_dynamic["Date"] = pd.to_datetime(next_30_dynamic["Date"])
+next_30_dynamic["Predicted_Sales"] = pd.to_numeric(next_30_dynamic["Predicted_Sales"], errors="coerce").fillna(0.0)
+
+forecast_horizon_days = int(len(next_30_dynamic))
+
+if model_obj is None or not feature_columns:
+    st.info(
+        "Trained model files not found under `models/`. The dashboard uses `outputs/*.csv` for charts and forecasts. "
+        "Run `run_model.py` to create `best_model.pkl` for custom-date predictions."
+    )
 
 # Header
 left, right = st.columns([4.6, 1.4], gap="large")
@@ -450,11 +470,12 @@ with left:
         unsafe_allow_html=True,
     )
 with right:
+    last_refresh_utc = pd.Timestamp.utcnow().strftime("%Y-%m-%d %H:%M UTC")
     st.markdown(
-        """
+        f"""
         <div class="panel">
             <div class="refresh-title">Last refresh</div>
-            <div class="refresh-value">today, 09:42 UTC</div>
+            <div class="refresh-value">{last_refresh_utc}</div>
         </div>
         """,
         unsafe_allow_html=True,
@@ -470,25 +491,35 @@ if not PLOTLY_AVAILABLE:
     )
 
 # KPI row
+# calculated from dataset
 avg_daily_demand = float(daily_sales["Sales"].mean())
+# calculated from dataset
 weekend_avg = daily_sales[daily_sales["Date"].dt.weekday >= 5]["Sales"].mean()
+# calculated from dataset
 weekday_avg = daily_sales[daily_sales["Date"].dt.weekday < 5]["Sales"].mean()
+# calculated from dataset
 weekend_uplift = float(((weekend_avg - weekday_avg) / (weekday_avg + 1e-9)) * 100)
+# calculated from dataset
 first_30_avg = daily_sales["Sales"].head(30).mean()
 if len(daily_sales) >= 60:
+    # calculated from dataset
     mid_30_avg = daily_sales["Sales"].iloc[-60:-30].mean()
 else:
+    # calculated from dataset
     mid_30_avg = daily_sales["Sales"].head(30).mean()
+# calculated from dataset
 last_30_avg = daily_sales["Sales"].tail(30).mean()
+# calculated from dataset (last 30 days vs first 30 days average)
 growth = float(((last_30_avg - first_30_avg) / (first_30_avg + 1e-9)) * 100)
+# calculated from dataset
 trend = float(((last_30_avg - mid_30_avg) / (mid_30_avg + 1e-9)) * 100)
 
 k1, k2, k3, k4 = st.columns(4)
 cards = [
-    ("AVG DAILY DEMAND", f"${avg_daily_demand/1000:,.1f}k", f"{growth:+.1f}% vs first 30 days"),
-    ("GROWTH", f"{growth:+.1f}%", "Recent 30-day trend"),
+    ("AVG DAILY DEMAND", fmt_inr(avg_daily_demand), f"{growth:+.1f}% vs first 30 days"),
+    ("GROWTH", f"{growth:+.1f}%", "First 30 vs last 30 days"),
     ("WEEKEND UPLIFT", f"{weekend_uplift:+.1f}%", "vs weekday baseline"),
-    ("FORECAST HORIZON", "30 Days", "Rolling forward horizon"),
+    ("FORECAST HORIZON", f"{forecast_horizon_days} Days", "Saved 30-day forecast length"),
 ]
 for col, (title, value, sub) in zip([k1, k2, k3, k4], cards):
     with col:
@@ -506,6 +537,7 @@ for col, (title, value, sub) in zip([k1, k2, k3, k4], cards):
 st.markdown("<div style='height:18px'></div>", unsafe_allow_html=True)
 
 # Actual vs Predicted (Plotly graph_objects only)
+# calculated from dataset (residual spread of predictions vs actuals)
 residual_std = (predictions["Actual_Sales"] - predictions["Predicted_Sales"]).std()
 pred_upper = predictions["Predicted_Sales"] + residual_std
 pred_lower = predictions["Predicted_Sales"] - residual_std
@@ -542,6 +574,7 @@ if PLOTLY_AVAILABLE:
             mode="lines",
             name="Actual",
             line=dict(color="#2ee88f", width=3),
+            hovertemplate="₹%{y:,.2f}<extra></extra>",
         )
     )
     fig_main.add_trace(
@@ -551,6 +584,7 @@ if PLOTLY_AVAILABLE:
             mode="lines",
             name="Predicted",
             line=dict(color="#39c9ff", width=3),
+            hovertemplate="₹%{y:,.2f}<extra></extra>",
         )
     )
     fig_main.update_layout(
@@ -562,7 +596,13 @@ if PLOTLY_AVAILABLE:
         font=dict(color="#f4f7fb"),
         legend=dict(orientation="h", y=1.02, x=0, bgcolor="rgba(0,0,0,0)", font=dict(color="#f4f7fb")),
         xaxis=dict(gridcolor="rgba(148,163,184,0.2)", tickfont=dict(color="#94a3b8")),
-        yaxis=dict(gridcolor="rgba(148,163,184,0.2)", tickfont=dict(color="#94a3b8"), title="Sales"),
+        yaxis=dict(
+            gridcolor="rgba(148,163,184,0.2)",
+            tickfont=dict(color="#94a3b8"),
+            title="Sales (₹)",
+            tickprefix="₹",
+            tickformat=",.0f",
+        ),
     )
     st.plotly_chart(fig_main, use_container_width=True)
 else:
@@ -571,25 +611,30 @@ st.markdown("</div>", unsafe_allow_html=True)
 
 st.markdown("<div style='height:14px'></div>", unsafe_allow_html=True)
 
-# Model performance section
+# Model performance section — R² / RMSE / MAE below: loaded from outputs/model_comparison.csv (see best_row above)
+# calculated from dataset (unless MAPE provided in metrics.json)
 mae = (predictions["Actual_Sales"] - predictions["Predicted_Sales"]).abs().mean()
 rmse = ((predictions["Actual_Sales"] - predictions["Predicted_Sales"]) ** 2).mean() ** 0.5
-valid = predictions["Actual_Sales"] > 0
-if valid.sum() > 0:
-    mape = (
-        (predictions.loc[valid, "Actual_Sales"] - predictions.loc[valid, "Predicted_Sales"]).abs()
-        / predictions.loc[valid, "Actual_Sales"]
-    ).mean() * 100
+if metrics_json is not None and metrics_json.get("mape") is not None:
+    mape = float(metrics_json["mape"])
 else:
-    mape = 0.0
+    valid = predictions["Actual_Sales"] > 0
+    if valid.sum() > 0:
+        # calculated from dataset
+        mape = (
+            (predictions.loc[valid, "Actual_Sales"] - predictions.loc[valid, "Predicted_Sales"]).abs()
+            / predictions.loc[valid, "Actual_Sales"]
+        ).mean() * 100
+    else:
+        mape = 0.0
 
 st.markdown('<div class="panel"><div class="section-title">Model Performance</div>', unsafe_allow_html=True)
 mm1, mm2, mm3, mm4 = st.columns(4)
 metrics = [
     ("Best Model", best_model_name, "Top model from model_comparison.csv"),
     ("R² Score", f"{best_r2:.3f}", "Best model R² score"),
-    ("RMSE", f"{best_rmse:,.0f}", "Best model RMSE"),
-    ("MAE", f"{best_mae:,.0f}", "Best model MAE"),
+    ("RMSE", fmt_inr(best_rmse, 0), "Best model RMSE"),
+    ("MAE", fmt_inr(best_mae, 0), "Best model MAE"),
 ]
 for col, (lab, val, desc) in zip([mm1, mm2, mm3, mm4], metrics):
     with col:
@@ -633,12 +678,18 @@ st.markdown(
 
 # Key drivers of sale (below model performance)
 weekend_mask = daily_sales["Date"].dt.weekday >= 5
+# calculated from dataset
 weekday_avg = daily_sales.loc[~weekend_mask, "Sales"].mean()
+# calculated from dataset
 weekend_avg = daily_sales.loc[weekend_mask, "Sales"].mean()
+# calculated from dataset
 seasonality_delta = ((weekend_avg - weekday_avg) / (weekday_avg + 1e-9)) * 100
+# calculated from dataset
 volatility_cv = (daily_sales["Sales"].std() / (daily_sales["Sales"].mean() + 1e-9)) * 100
 head_n = min(30, len(daily_sales))
+# calculated from dataset
 start_avg = daily_sales["Sales"].head(head_n).mean()
+# calculated from dataset
 end_avg = daily_sales["Sales"].tail(head_n).mean()
 trend_delta = trend
 
@@ -719,7 +770,7 @@ st.markdown(
         <div class="section-title">Why {best_model_name} is the Best Model</div>
         <div class="info-card-text">
             {best_model_name} is selected as the best model because it achieved the highest R² score of {best_r2:.3f}.
-            It outperformed {second_model} by +{r2_diff:.3f} R² and reduced RMSE by {rmse_diff:.0f}.
+            It outperformed {second_model} by +{r2_diff:.3f} R² and reduced RMSE by {fmt_inr(rmse_diff, 0)}.
         </div>
         <div class="info-card-text" style="margin-top:10px;">
             {best_description}
@@ -771,21 +822,25 @@ else:
                 f"""
                 <div style="margin-top:10px;" class="metric-box">
                     <div class="metric-label">Predicted Sales for {selected.date()}</div>
-                    <div class="metric-value">{pred_value:,.2f}</div>
+                    <div class="metric-value">{fmt_inr(pred_value)}</div>
                     <div class="metric-desc">Real-time inference from models/best_model.pkl</div>
                 </div>
                 """,
                 unsafe_allow_html=True,
             )
-            if pred_value < 1000:
-                st.warning("Prediction unusually low, check feature generation.")
+            # calculated from dataset (low vs historical sales distribution)
+            low_pred_threshold = float(daily_sales["Sales"].quantile(0.01))
+            if pred_value < low_pred_threshold:
+                st.warning("Prediction unusually low relative to historical daily sales (below ~1st percentile); check feature generation.")
 st.markdown("</div>", unsafe_allow_html=True)
 
 st.markdown("<div style='height:14px'></div>", unsafe_allow_html=True)
 
 # Next 7 Days Forecast table + chart
 st.markdown('<div class="panel"><div class="section-title">Next 7 Days Forecast</div>', unsafe_allow_html=True)
-st.dataframe(next_7_dynamic, use_container_width=True, hide_index=True)
+next_7_display = next_7_dynamic.copy()
+next_7_display["Predicted_Sales"] = next_7_display["Predicted_Sales"].map(lambda x: fmt_inr(float(x)))
+st.dataframe(next_7_display, use_container_width=True, hide_index=True)
 if PLOTLY_AVAILABLE:
     fig_7 = go.Figure()
     fig_7.add_trace(
@@ -796,6 +851,7 @@ if PLOTLY_AVAILABLE:
             name="Forecast",
             line=dict(color="#2ee88f", width=3),
             marker=dict(color="#2ee88f", size=7),
+            hovertemplate="₹%{y:,.2f}<extra></extra>",
         )
     )
     fig_7.update_layout(
@@ -806,7 +862,13 @@ if PLOTLY_AVAILABLE:
         font=dict(color="#f4f7fb"),
         margin=dict(l=20, r=20, t=20, b=20),
         xaxis=dict(gridcolor="rgba(148,163,184,0.2)", tickfont=dict(color="#94a3b8")),
-        yaxis=dict(gridcolor="rgba(148,163,184,0.2)", tickfont=dict(color="#94a3b8"), title="Sales"),
+        yaxis=dict(
+            gridcolor="rgba(148,163,184,0.2)",
+            tickfont=dict(color="#94a3b8"),
+            title="Sales (₹)",
+            tickprefix="₹",
+            tickformat=",.0f",
+        ),
         legend=dict(font=dict(color="#f4f7fb")),
     )
     st.plotly_chart(fig_7, use_container_width=True)
@@ -818,7 +880,9 @@ st.markdown("<div style='height:14px'></div>", unsafe_allow_html=True)
 
 # Next 30 Days Forecast table + chart
 st.markdown('<div class="panel"><div class="section-title">Next 30 Days Forecast</div>', unsafe_allow_html=True)
-st.dataframe(next_30_dynamic, use_container_width=True, hide_index=True)
+next_30_display = next_30_dynamic.copy()
+next_30_display["Predicted_Sales"] = next_30_display["Predicted_Sales"].map(lambda x: fmt_inr(float(x)))
+st.dataframe(next_30_display, use_container_width=True, hide_index=True)
 if PLOTLY_AVAILABLE:
     fig_30 = go.Figure()
     fig_30.add_trace(
@@ -829,6 +893,7 @@ if PLOTLY_AVAILABLE:
             name="Forecast",
             line=dict(color="#2ee88f", width=3),
             marker=dict(color="#2ee88f", size=5),
+            hovertemplate="₹%{y:,.2f}<extra></extra>",
         )
     )
     fig_30.update_layout(
@@ -839,7 +904,13 @@ if PLOTLY_AVAILABLE:
         font=dict(color="#f4f7fb"),
         margin=dict(l=20, r=20, t=20, b=20),
         xaxis=dict(gridcolor="rgba(148,163,184,0.2)", tickfont=dict(color="#94a3b8")),
-        yaxis=dict(gridcolor="rgba(148,163,184,0.2)", tickfont=dict(color="#94a3b8"), title="Sales"),
+        yaxis=dict(
+            gridcolor="rgba(148,163,184,0.2)",
+            tickfont=dict(color="#94a3b8"),
+            title="Sales (₹)",
+            tickprefix="₹",
+            tickformat=",.0f",
+        ),
         legend=dict(font=dict(color="#f4f7fb")),
     )
     st.plotly_chart(fig_30, use_container_width=True)
@@ -852,6 +923,7 @@ st.markdown("<div style='height:14px'></div>", unsafe_allow_html=True)
 # Feature section
 ws_left, ws_right = st.columns(2, gap="large")
 
+# calculated from dataset (mean sales by weekday)
 weekly = daily_sales.copy()
 weekly["weekday"] = weekly["Date"].dt.day_name()
 weekday_order = ["Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday", "Sunday"]
@@ -869,6 +941,7 @@ with ws_left:
                     y=weekly["Sales"],
                     marker=dict(color="#2ee88f"),
                     name="Weekly Seasonality",
+                    hovertemplate="₹%{y:,.2f}<extra></extra>",
                 )
             ]
         )
@@ -881,7 +954,13 @@ with ws_left:
             font=dict(color="#f4f7fb"),
             showlegend=False,
             xaxis=dict(gridcolor="rgba(148,163,184,0.2)", tickfont=dict(color="#94a3b8")),
-            yaxis=dict(gridcolor="rgba(148,163,184,0.2)", tickfont=dict(color="#94a3b8")),
+            yaxis=dict(
+                gridcolor="rgba(148,163,184,0.2)",
+                tickfont=dict(color="#94a3b8"),
+                title="Avg sales (₹)",
+                tickprefix="₹",
+                tickformat=",.0f",
+            ),
         )
         st.plotly_chart(fig_week, use_container_width=True)
     else:
@@ -889,14 +968,23 @@ with ws_left:
     st.markdown("</div>", unsafe_allow_html=True)
 
 with ws_right:
-    fi_top = feature_importance.sort_values("Importance", ascending=False).head(8).copy()
-    fi_max = fi_top["Importance"].max() if len(fi_top) else 1
-    fi_top["pct"] = (fi_top["Importance"] / (fi_max + 1e-9) * 100).clip(lower=2)
+    if len(feature_importance) == 0:
+        st.markdown(
+            """<div class="panel">
+<div class="section-title">Feature Importance</div>
+<div class="muted">No data — run `run_model.py` to generate `outputs/feature_importance.csv`.</div>
+</div>""",
+            unsafe_allow_html=True,
+        )
+    else:
+        fi_top = feature_importance.sort_values("Importance", ascending=False).head(8).copy()
+        fi_max = fi_top["Importance"].max() if len(fi_top) else 1
+        fi_top["pct"] = (fi_top["Importance"] / (fi_max + 1e-9) * 100).clip(lower=2)
 
-    rows = []
-    for _, row in fi_top.iterrows():
-        rows.append(
-            f"""<div class="progress-row">
+        rows = []
+        for _, row in fi_top.iterrows():
+            rows.append(
+                f"""<div class="progress-row">
 <div class="progress-head">
 <span>{row['Feature']}</span>
 <span>{row['Importance']:.3f}</span>
@@ -905,30 +993,36 @@ with ws_right:
 <div class="progress-fill" style="width:{row['pct']:.1f}%;"></div>
 </div>
 </div>"""
-        )
-    st.markdown(
-        f"""<div class="panel">
+            )
+        st.markdown(
+            f"""<div class="panel">
 <div class="section-title">Feature Importance</div>
 <div class="muted">Ranked contribution weights using horizontal progress bars.</div>
 <div class="progress-wrap">
 {''.join(rows)}
 </div>
 </div>""",
-        unsafe_allow_html=True,
-    )
+            unsafe_allow_html=True,
+        )
 
 st.markdown("<div style='height:14px'></div>", unsafe_allow_html=True)
 
 # Business insights
 st.markdown('<div class="section-title">Business Insights</div>', unsafe_allow_html=True)
 b1, b2, b3 = st.columns(3, gap="large")
+_roll_w = max(2, min(7, len(daily_sales)))
+_roll_std = daily_sales["Sales"].rolling(_roll_w, min_periods=2).std()
+_roll_mean = daily_sales["Sales"].rolling(_roll_w, min_periods=2).mean()
+_rolling_cv_pct = (_roll_std / (_roll_mean + 1e-9) * 100).replace([np.inf, -np.inf], np.nan).dropna()
+# calculated from dataset (compare overall CV to rolling CV distribution)
+volatility_high_threshold = float(np.percentile(_rolling_cv_pct, 75)) if len(_rolling_cv_pct) else volatility_cv + 1.0
 if weekend_uplift < 0:
     seasonality_text = "Weekend demand is lower than weekday baseline. Focus promotions or staffing more on weekdays."
 else:
     seasonality_text = "Weekend demand is higher than weekday baseline. Increase inventory and staffing before weekends."
 
-if volatility_cv > 50:
-    volatility_text = "Demand is highly volatile. Use safety stock and monitor forecast errors weekly."
+if volatility_cv > volatility_high_threshold:
+    volatility_text = "Demand is highly volatile relative to typical rolling variability in this dataset. Use safety stock and monitor forecast errors weekly."
 else:
     volatility_text = "Demand is relatively stable. Current forecast can support planning decisions."
 
